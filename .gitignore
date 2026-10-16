@@ -1,0 +1,19 @@
+# Environment
+.env
+
+# Binary output
+/auth-service
+/api
+*.exe
+
+# Vendor (only if you run go mod vendor)
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
