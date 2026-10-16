@@ -2,7 +2,6 @@ package handler
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -16,19 +15,16 @@ type AuthHandler struct {
 }
 
 func NewAuthHandler(authService service.AuthService) *AuthHandler {
-	return &AuthHandler{
-		authService: authService,
-	}
+	return &AuthHandler{authService: authService}
 }
 
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req dto.RegisterRequest
-
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    "VALIDATION_ERROR",
-			"message": "invalid request body",
-			"details": err.Error(),
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+			Code:    "VALIDATION_ERROR",
+			Message: "invalid request body",
+			Details: err.Error(),
 		})
 		return
 	}
@@ -36,31 +32,78 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	user, err := h.authService.Register(c.Request.Context(), req)
 	if err != nil {
 		if err == domain.ErrEmailTaken {
-			c.JSON(http.StatusConflict, gin.H{
-				"code":    "EMAIL_TAKEN",
-				"message": "email already exists",
-			})
+			c.JSON(http.StatusConflict, dto.ErrorResponse{Code: "EMAIL_TAKEN", Message: "email already in use"})
 			return
 		}
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Code: "INTERNAL_ERROR", Message: "internal server error"})
+		return
+	}
 
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    "INTERNAL_ERROR",
-			"message": "internal server error",
+	resp := service.DomainUserToResponse(user)
+	c.JSON(http.StatusCreated, resp)
+}
+
+func (h *AuthHandler) Login(c *gin.Context) {
+	var req dto.LoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+			Code:    "VALIDATION_ERROR",
+			Message: "invalid request body",
+			Details: err.Error(),
 		})
 		return
 	}
 
-	response := dto.UserResponse{
-		ID:        user.ID.String(),
-		Email:     user.Email,
-		FullName:  user.FullName,
-		CreatedAt: user.CreatedAt.Format(time.RFC3339),
-		UpdatedAt: user.UpdatedAt.Format(time.RFC3339),
+	meta := dto.ClientMeta{
+		UserAgent: c.Request.UserAgent(),
+		IPAddress: c.ClientIP(),
 	}
 
-	if user.Phone != nil {
-		response.Phone = *user.Phone
+	resp, err := h.authService.Login(c.Request.Context(), req, meta)
+	if err != nil {
+		switch err {
+		case domain.ErrInvalidCredentials:
+			c.JSON(http.StatusUnauthorized, dto.ErrorResponse{Code: "INVALID_CREDENTIALS", Message: "invalid email or password"})
+		case domain.ErrAccountLocked:
+			c.JSON(http.StatusLocked, dto.ErrorResponse{Code: "ACCOUNT_LOCKED", Message: "account is temporarily locked"})
+		default:
+			c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Code: "INTERNAL_ERROR", Message: "internal server error"})
+		}
+		return
 	}
 
-	c.JSON(http.StatusCreated, response)
+	c.JSON(http.StatusOK, resp)
+}
+
+func (h *AuthHandler) Refresh(c *gin.Context) {
+	var req dto.RefreshRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+			Code:    "VALIDATION_ERROR",
+			Message: "refresh_token is required",
+		})
+		return
+	}
+
+	resp, err := h.authService.Refresh(c.Request.Context(), req.RefreshToken)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, dto.ErrorResponse{Code: "UNAUTHORIZED", Message: "invalid or expired refresh token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+func (h *AuthHandler) Logout(c *gin.Context) {
+	var req dto.RefreshRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+			Code:    "VALIDATION_ERROR",
+			Message: "refresh_token is required",
+		})
+		return
+	}
+
+	_ = h.authService.Logout(c.Request.Context(), req.RefreshToken)
+	c.Status(http.StatusNoContent)
 }
