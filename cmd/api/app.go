@@ -2,64 +2,80 @@ package main
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/gin-gonic/gin"
-	redisClient "github.com/redis/go-redis/v9"
-	"gorm.io/gorm"
+	"github.com/joho/godotenv"
 
 	"scannerAuth/internal/config"
+	"scannerAuth/internal/hasher"
 	"scannerAuth/internal/pkg/database"
-	"scannerAuth/internal/pkg/rediscache"
+	"scannerAuth/internal/pkg/token"
+	"scannerAuth/internal/router"
 )
 
 type App struct {
-	Router *gin.Engine
-	DB     *gorm.DB
-	Redis  *redisClient.Client
 	Config *config.Config
 }
 
 func NewApp() (*App, error) {
+	if err := godotenv.Load(); err != nil {
+		log.Println("No .env file found, using system environment variables")
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load config: %w", err)
 	}
 
-	gin.SetMode(cfg.GinMode)
-
-	db, _, err := database.Connect(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	redisClient, err := rediscache.Connect(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	router := gin.Default()
-
-	app := &App{
-		Router: router,
-		DB:     db,
-		Redis:  redisClient,
-		Config: cfg,
-	}
-
-	app.setupRoutes()
-
-	return app, nil
-}
-
-func (app *App) setupRoutes() {
-	app.Router.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{
-			"status":  "ok",
-			"message": "Scanner Auth server is running",
-		})
-	})
+	return &App{Config: cfg}, nil
 }
 
 func (app *App) Run() error {
-	return app.Router.Run(fmt.Sprintf(":%s", app.Config.AppPort))
+	// Connect to database
+	db, _, err := database.Connect(app.Config)
+	if err != nil {
+		return fmt.Errorf("database connect: %w", err)
+	}
+
+	// Run migrations if enabled
+	if app.Config.RunMigrations {
+		if err := database.Migrate(db); err != nil {
+			return fmt.Errorf("database migrate: %w", err)
+		}
+		log.Println("Migrations completed")
+	}
+
+	// Initialize password hasher
+	bcryptHasher := hasher.NewBcryptHasher(app.Config.BcryptCost)
+
+	// Initialize JWT manager
+	tokenMgr, err := token.NewJWTManager(
+		app.Config.JWTSecret,
+		app.Config.JWTAccessTTL,
+		app.Config.JWTIssuer,
+		app.Config.JWTAudience,
+	)
+	if err != nil {
+		return fmt.Errorf("init token manager: %w", err)
+	}
+
+	// Set Gin mode
+	switch app.Config.GinMode {
+	case "debug", "release", "test":
+		// valid
+	default:
+		app.Config.GinMode = "release"
+	}
+
+	// Setup Gin engine
+	gin.SetMode(app.Config.GinMode)
+	engine := gin.Default()
+
+	// Setup routes and middleware
+	router.Setup(engine, db, tokenMgr, bcryptHasher)
+
+	// Start server
+	log.Printf("Starting auth service on :%s", app.Config.AppPort)
+	return engine.Run(fmt.Sprintf(":%s", app.Config.AppPort))
 }

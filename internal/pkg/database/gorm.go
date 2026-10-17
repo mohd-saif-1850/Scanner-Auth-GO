@@ -38,6 +38,11 @@ func Connect(cfg *config.Config) (*gorm.DB, *sql.DB, error) {
 	sqlDB.SetMaxIdleConns(5)
 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 
+	// Test actual connection
+	if err := sqlDB.Ping(); err != nil {
+		return nil, nil, fmt.Errorf("database ping failed: %w", err)
+	}
+
 	slog.New(slog.NewJSONHandler(os.Stdout, nil)).Info("database connected")
 
 	return db, sqlDB, nil
